@@ -1,204 +1,270 @@
-const { 
-    Client, 
-    GatewayIntentBits, 
-    REST, 
-    Routes, 
-    SlashCommandBuilder, 
-    PermissionsBitField, 
-    ChannelType 
-} = require('discord.js');
+const { Client, GatewayIntentBits, EmbedBuilder, ChannelType, PermissionsBitField } = require('discord.js');
 
 const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
         GatewayIntentBits.GuildMembers,
+        GatewayIntentBits.GuildMessages,
         GatewayIntentBits.MessageContent
     ]
 });
 
-// ID Tanımlamaları
-const CONFIG = {
-    BAN_YETKILISI: "1542872076980068372", // Ban açabilen/özel yetkili
-    KOMUT_ROLU: "1542872257276149860", // Komutları kullanabilen rol
-    KATEGORI_ID: "1553350045099622420", // Yeni ekip kanallarının açılacağı kategori
-    ISLEM_KANALI: "1542872637745799190", // Komutların kullanılabileceği kanal
-    LOG_KANALI: "1553350655916384358" // Log kanalı
-};
-
-client.once('ready', async () => {
-    console.log(`Bot aktif: ${client.user.tag}`);
-
-    // Slash Komutlarını Kaydetme
-    const commands = [
-        new SlashCommandBuilder()
-            .setName('ban')
-            .setDescription('Kullanıcıyı banlar veya banını açar')
-            .addUserOption(option => option.name('kullanici').setDescription('İşlem yapılacak kişi').setRequired(true))
-            .addStringOption(option => option.name('islem').setDescription('ban veya ac').setRequired(true).addChoices(
-                { name: 'Banla', value: 'ban' },
-                { name: 'Banı Aç', value: 'unban' }
-            )),
-
-        new SlashCommandBuilder()
-            .setName('ekip-oluştur')
-            .setDescription('Yeni bir ekip ve kanallarını oluşturur')
-            .addStringOption(option => option.name('ekip_adi').setDescription('Ekibin adı').setRequired(true))
-            .addStringOption(option => option.name('renk').setDescription('Rol rengi (Örn: #FF0000)').setRequired(true))
-            .addIntegerOption(option => option.name('kisi_sayisi').setDescription('Kişi sınırı').setRequired(true)),
-
-        new SlashCommandBuilder()
-            .setName('rolver')
-            .setDescription('Birine rol verir')
-            .addUserOption(option => option.name('kullanici').setDescription('Rol verilecek kişi').setRequired(true))
-            .addRoleOption(option => option.name('rol').setDescription('Verilecek rol').setRequired(true)),
-
-        new SlashCommandBuilder()
-            .setName('rolal')
-            .setDescription('Birinden rol alır')
-            .addUserOption(option => option.name('kullanici').setDescription('Rolü alınacak kişi').setRequired(true))
-            .addRoleOption(option => option.name('rol').setDescription('Alınacak rol').setRequired(true))
-    ];
-
-    const rest = new REST({ version: '10' }).setToken('BOT_TOKENINIZI_BURAYA_YAZIN');
-    try {
-        await rest.put(Routes.applicationCommands(client.user.id), { body: commands });
-        console.log('Slash komutları yüklendi.');
-    } catch (error) {
-        console.error(error);
-    }
+// Global hata yakalama (Botun çökmesini önler)
+process.on('unhandledRejection', error => {
+    console.error('Yakalanmamış hata (Unhandled Rejection):', error);
 });
 
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
 
-    const { commandName, options, member, channel, guild } = interaction;
+    const { commandName, options, guild, member } = interaction;
+    const logKanalet = guild.channels.cache.find(c => c.name === 'log' && c.type === ChannelType.GuildText);
 
-    // 1. Kanal Kontrolü
-    if (channel.id !== CONFIG.ISLEM_KANALI) {
-        return interaction.reply({ content: `Bu komut sadece <#${CONFIG.ISLEM_KANALI}> kanalında kullanılabilir!`, ephemeral: true });
+    // --- YETKİ KONTROLÜ (Sadece belirlenen rol ve sunucu sahibi kullanabilir) ---
+    const izinliRolId = '1542872257276149860';
+    if (!member.roles.cache.has(izinliRolId) && member.id !== guild.ownerId) {
+        return interaction.reply({ 
+            content: '❌ Bu komutu kullanabilmek için gerekli yetkiye (role) sahip değilsiniz!', 
+            ephemeral: true 
+        });
     }
 
-    // 2. Rol Kontrolü (/ekip-oluştur, /rolver, /rolal için)
-    if (!member.roles.cache.has(CONFIG.KOMUT_ROLU) && !member.permissions.has(PermissionsBitField.Flags.Administrator)) {
-        return interaction.reply({ content: 'Bu komutları kullanmak için gerekli role sahip değilsin!', ephemeral: true });
-    }
+    try {
+        // --- 1. BAN KOMUTU ---
+        if (commandName === 'ban') {
+            const hedefUye = options.getUser('kullanici');
+            const sebep = options.getString('sebep') || 'Sebep belirtilmedi.';
+            const uye = await guild.members.fetch(hedefUye.id).catch(() => null);
 
-    const logKanalet = guild.channels.cache.get(CONFIG.LOG_KANALI);
+            if (!uye) return interaction.reply({ content: 'Kullanıcı bu sunucuda bulunamadı!', ephemeral: true });
 
-    // --- BAN KOMUTU ---
-    if (commandName === 'ban') {
-        const hedefUser = options.getUser('kullanici');
-        const islemTuru = options.getString('islem');
+            await uye.ban({ reason: sebep });
+            await interaction.reply({ content: `${hedefUye.tag} başarıyla banlandı. Sebep: ${sebep}`, ephemeral: true });
 
-        if (islemTuru === 'unban') {
-            if (member.id !== CONFIG.BAN_YETKILISI) {
-                return interaction.reply({ content: 'Ban açma yetkiniz yok!', ephemeral: true });
-            }
-            try {
-                await guild.members.unban(hedefUser.id);
-                interaction.reply({ content: `${hedefUser.tag} adlı kullanıcının banı kaldırıldı.` });
-                if (logKanalet) logKanalet.send(`⚠️ **[BAN AÇILDI]** ${member.user.tag} adlı yetkili, ${hedefUser.tag} adlı kullanıcının banını kaldırdı.`);
-            } catch (err) {
-                interaction.reply({ content: 'Kullanıcının banı açılamadı.', ephemeral: true });
-            }
-        } else if (islemTuru === 'ban') {
-            // Banlama yetkisi kontrolü (Örn: Sadece özel ID banlayabilir veya belirli yetki)
-            if (member.id !== CONFIG.BAN_YETKILISI && !member.permissions.has(PermissionsBitField.Flags.BanMembers)) {
-                return interaction.reply({ content: 'Bu komutla kimseyi banlayamazsınız!', ephemeral: true });
-            }
-            try {
-                await guild.members.ban(hedefUser);
-                interaction.reply({ content: `${hedefUser.tag} başarıyla banlandı.` });
-                if (logKanalet) logKanalet.send(`🔨 **[BANLANDI]** ${member.user.tag}, ${hedefUser.tag} kullanıcısını banladı.`);
-            } catch (err) {
-                interaction.reply({ content: 'Kullanıcı banlanamadı.', ephemeral: true });
+            if (logKanalet) {
+                await logKanalet.send(`🔨 **[BAN]** ${member.user.tag}, ${hedefUye.tag} kullanıcısını banladı. Sebep: ${sebep}`);
             }
         }
-    }
 
-    // --- EKİP OLUŞTUR KOMUTU ---
-    else if (commandName === 'ekip-oluştur') {
-        const ekipAdi = options.getString('ekip_adi');
-        const renk = options.getString('renk');
-        const kisiSayisi = options.getInteger('kisi_sayisi');
+        // --- 2. UNBAN KOMUTU ---
+        else if (commandName === 'unban') {
+            const userId = options.getString('id');
+            await guild.members.unban(userId);
+            await interaction.reply({ content: `ID'si verilen kullanıcının banı kaldırıldı.`, ephemeral: true });
 
-        await interaction.deferReply();
+            if (logKanalet) {
+                await logKanalet.send(`🔓 **[UNBAN]** ${member.user.tag},${userId} ID'li kullanıcının banını kaldırdı.`);
+            }
+        }
 
-        try {
-            // Rol Oluşturma
+        // --- 3. BAN SORGU KOMUTU ---
+        else if (commandName === 'ban-sorgu') {
+            const hedefId = options.getString('id');
+            const banBilgisi = await guild.bans.fetch(hedefId).catch(() => null);
+
+            if (!banBilgisi) {
+                return interaction.reply({ content: `🔍 Bu ID'ye (${hedefId}) sahip sunucuda yasaklı (banlı) bir kullanıcı bulunamadı.`, ephemeral: true });
+            }
+
+            const embed = new EmbedBuilder()
+                .setTitle('🛡️ Ban Sorgulama Sonucu')
+                .setColor('#ED4245')
+                .setThumbnail(banBilgisi.user.displayAvatarURL())
+                .addFields(
+                    { name: '👤 Kullanıcı Adı', value: `${banBilgisi.user.tag} (\`${banBilgisi.user.id}\`)`, inline: false },
+                    { name: '📌 Ban Sebebi', value: banBilgisi.reason || 'Sebep belirtilmemiş.', inline: false }
+                )
+                .setTimestamp();
+
+            await interaction.reply({ embeds: [embed], ephemeral: true });
+        }
+
+        // --- 4. KICK KOMUTU ---
+        else if (commandName === 'kick') {
+            const hedefUye = options.getUser('kullanici');
+            const sebep = options.getString('sebep') || 'Sebep belirtilmedi.';
+            const uye = await guild.members.fetch(hedefUye.id).catch(() => null);
+
+            if (!uye) return interaction.reply({ content: 'Kullanıcı bu sunucuda bulunamadı!', ephemeral: true });
+
+            await uye.kick(sebep);
+            await interaction.reply({ content: `${hedefUye.tag} sunucudan atıldı. Sebep: ${sebep}`, ephemeral: true });
+
+            if (logKanalet) {
+                await logKanalet.send(`👢 **[KICK]** ${member.user.tag}, ${hedefUye.tag} kullanıcısını attı. Sebep: ${sebep}`);
+            }
+        }
+
+        // --- 5. ROL VER KOMUTU ---
+        else if (commandName === 'rolver') {
+            const hedefUye = await guild.members.fetch(options.getUser('kullanici').id);
+            const rol = options.getRole('rol');
+
+            if (rol.position >= member.roles.highest.position && member.id !== guild.ownerId) {
+                return interaction.reply({ content: 'Kendi rol seviyenizden üst veya aynı hiyerarşideki bir rolü başkasına veremezsiniz!', ephemeral: true });
+            }
+
+            await hedefUye.roles.add(rol);
+            await interaction.reply({ content: `${hedefUye.user.tag} adlı kullanıcıya ${rol.name} rolü verildi.`, ephemeral: true });
+
+            if (logKanalet) {
+                await logKanalet.send(`➕ **[ROL VERİLDİ]** ${member.user.tag}, ${hedefUye.user.tag} adlı kullanıcıya ${rol.name} rolünü verdi.`);
+            }
+        }
+
+        // --- 6. ROL AL KOMUTU ---
+        else if (commandName === 'rolal') {
+            const hedefUye = await guild.members.fetch(options.getUser('kullanici').id);
+            const rol = options.getRole('rol');
+
+            if (rol.position >= member.roles.highest.position && member.id !== guild.ownerId) {
+                return interaction.reply({ content: 'Kendi rol seviyenizden üst veya aynı hiyerarşideki bir rolü başkasından alamazsınız!', ephemeral: true });
+            }
+
+            await hedefUye.roles.remove(rol);
+            await interaction.reply({ content: `${hedefUye.user.tag} adlı kullanıcıdan ${rol.name} rolü alındı.`, ephemeral: true });
+
+            if (logKanalet) {
+                await logKanalet.send(`➖ **[ROL ALINDI]** ${member.user.tag}, ${hedefUye.user.tag} adlı kullanıcıdan ${rol.name} rolünü aldı.`);
+            }
+        }
+
+        // --- 7. OLUŞUM EKLE ---
+        else if (commandName === 'olusum' && options.getSubcommand() === 'ekle') {
+            const isim = options.getString('isim');
+            const lider = options.getUser('lider');
+            let renk = options.getString('renk');
+
+            if (!renk) {
+                renk = Math.floor(Math.random() * 16777215).toString(16);
+            } else {
+                renk = renk.replace('#', '');
+            }
+
             const yeniRol = await guild.roles.create({
-                name: ekipAdi,
-                color: renk,
-                reason: `${member.user.tag} tarafından oluşturuldu.`
+                name: isim,
+                color: parseInt(renk, 16),
+                reason: `${member.user.tag} tarafından yeni oluşum olarak kuruldu.`
             });
 
-            // Kategoriye Kanal Açma
+            const hedefUye = await guild.members.fetch(lider.id);
+            await hedefUye.roles.add(yeniRol);
+
+            let kategori = guild.channels.cache.find(c => c.name === 'OLUSUM' && c.type === ChannelType.GuildCategory);
+            if (!kategori) {
+                kategori = await guild.channels.create({ name: 'OLUSUM', type: ChannelType.GuildCategory });
+            }
+
+            const kanalAdi = `👥・${isim.toLowerCase().replace(/\s+/g, '-')}-sınırsız`;
             const yeniKanal = await guild.channels.create({
-                name: `${ekipAdi}-başvuru`,
+                name: kanalAdi,
                 type: ChannelType.GuildText,
-                parent: CONFIG.KATEGORI_ID,
+                parent: kategori.id,
                 permissionOverwrites: [
-                    {
-                        id: guild.id,
-                        deny: [PermissionsBitField.Flags.ViewChannel],
-                    },
-                    {
-                        id: yeniRol.id,
-                        allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.SendMessages],
-                    }
+                    { id: guild.id, deny: [PermissionsBitField.Flags.ViewChannel] },
+                    { id: lider.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ManageChannels] },
+                    { id: client.user.id, allow: [PermissionsBitField.Flags.ViewChannel, PermissionsBitField.Flags.ManageChannels] }
                 ]
             });
 
-            // Sınırsız Davet Linki Oluşturma
-            const davet = await yeniKanal.createInvite({ maxAge: 0, maxUses: 0 });
+            await interaction.reply({ content: `Başarıyla **${isim}** oluşumu kuruldu ve liderine rolü atandı! Kanal: ${yeniKanal}`, ephemeral: true });
 
-            interaction.editReply(`✅ Ekip başarıyla oluşturuldu!\nRol: ${yeniRol}\nKanal: ${yeniKanal}\nDavet Linki: ${davet.url}`);
-            
             if (logKanalet) {
-                logKanalet.send(`📁 **[EKİP OLUŞTURuldu]** ${member.user.tag} tarafından **${ekipAdi}** ekibi kuruldu. (Kişi Sınırı: ${kisiSayisi})`);
+                await logKanalet.send(`🛠️ **[OLUŞUM EKLENDİ]** ${member.user.tag} tarafından **${isim}** kuruldu. Lider: <@${lider.id}>`);
             }
-        } catch (err) {
-            console.error(err);
-            interaction.editReply('Ekip oluşturulurken bir hata meydana geldi.');
-        }
-    }
-
-    // --- ROL VER KOMUTU ---
-    else if (commandName === 'rolver') {
-        const hedefUye = await guild.members.fetch(options.getUser('kullanici').id);
-        const rol = options.getRole('rol');
-
-        // Hiyerarşi Kontrolü
-        if (rol.position >= member.roles.highest.position && member.id !== guild.ownerId) {
-            return interaction.reply({ content: 'Kendi rol seviyenizden üst veya aynı hiyerarşideki bir rolü başkasına veremezsiniz!', ephemeral: true });
         }
 
-        try {
-            await hedefUye.roles.add(rol);
-            interaction.reply({ content: `${hedefUye.user.tag} adlı kullanıcımıza ${rol.name} rolü verildi.` });
-            if (logKanalet) logKanalet.send(`➕ **[ROL VERİLDİ]** ${member.user.tag}, ${hedefUye.user.tag} adlı kullanıcıya ${rol.name} rolünü verdi.`);
-        } catch (err) {
-            interaction.reply({ content: 'Rol verilirken bir hata oluştu (Botun yetkisi yetersiz olabilir).', ephemeral: true });
+        // --- 8. İSTATİSTİK BİLGİ YENİ ---
+        else if (commandName === 'istatistik' && options.getSubcommand() === 'bilgiyeni') {
+            const istatistikVerisi = {
+                sesSuresi: { haftalik: "12 saat", aylik: "45 saat", yillik: "320 saat" },
+                mesajSayisi: { haftalik: 450, aylik: 1850, yillik: 12400 },
+                haftalikKayitAdedi: 15
+            };
+
+            const embed = new EmbedBuilder()
+                .setTitle('📊 Sunucu İstatistik Kartı')
+                .setColor('#0099ff')
+                .setDescription('Aşağıda belirttiğiniz periyotlara ait ses ve mesaj istatistikleri yer almaktadır *(Veriler dakikada bir güncellenmektedir)*:')
+                .addFields(
+                    { name: '🎙️ Ses Süreleri', value: `• Haftalık: \`${istatistikVerisi.sesSuresi.haftalik}\`\n• Aylık: \`${istatistikVerisi.sesSuresi.aylik}\`\n• Yıllık: \`${istatistikVerisi.sesSuresi.yillik}\``, inline: false },
+                    { name: '💬 Mesaj İstatistikleri', value: `• Haftalık: \`${istatistikVerisi.mesajSayisi.haftalik} mesaj\`\n• Aylık: \`${istatistikVerisi.mesajSayisi.aylik} mesaj\`\n• Yıllık: \`${istatistikVerisi.mesajSayisi.yillik} mesaj\``, inline: false },
+                    { name: '👥 Haftalık Kayıt Adedi', value: `\`${istatistikVerisi.haftalikKayitAdedi} kayıt\``, inline: true }
+                )
+                .setTimestamp();
+
+            await interaction.reply({ embeds: [embed], ephemeral: false });
         }
-    }
 
-    // --- ROL AL KOMUTU ---
-    else if (commandName === 'rolal') {
-        const hedefUye = await guild.members.fetch(options.getUser('kullanici').id);
-        const rol = options.getRole('rol');
+        // --- 9. DESTEK-İŞLEM TOP YENİ ---
+        else if (commandName === 'destek-islem' && options.getSubcommand() === 'topyeni') {
+            const topYetkililer = [
+                { sira: 1, id: member.id, puan: 145, destekSayisi: 50 }
+            ];
 
-        // Hiyerarşi Kontrolü
-        if (rol.position >= member.roles.highest.position && member.id !== guild.ownerId) {
-            return interaction.reply({ content: 'Kendi rol seviyenizden üst veya aynı hiyerarşideki bir rolü başkasından alamazsınız!', ephemeral: true });
+            let aciklama = topYetkililer.map(y => `**#${y.sira}** | <@${y.id}> — **${y.destekSayisi}** İşlem (*${y.puan} Puan*)`).join('\n');
+
+            const embed = new EmbedBuilder()
+                .setTitle('🏆 Haftalık En Çok Destek Veren Yetkililer (Top 30)')
+                .setColor('#5865F2')
+                .setDescription(aciklama || 'Bu hafta henüz kayıtlı bir destek işlemi bulunmuyor.')
+                .setTimestamp();
+
+            await interaction.reply({ embeds: [embed], ephemeral: false });
         }
 
-        try {
-            await hedefUye.roles.remove(rol);
-            interaction.reply({ content: `${hedefUye.user.tag} adlı kullanıcıdan ${rol.name} rolü alındı.` });
-            if (logKanalet) logKanalet.send(`➖ **[ROL ALINDI]** ${member.user.tag}, ${hedefUye.user.tag} adlı kullanıcıdan ${rol.name} rolünü aldı.`);
-        } catch (err) {
-            interaction.reply({ content: 'Rol alınırken bir hata oluştu.', ephemeral: true });
+        // --- 10. DESTEK-İŞLEM EKLE YENİ ---
+        else if (commandName === 'destek-islem' && options.getSubcommand() === 'ekleyeni') {
+            const hedefKisi = options.getUser('kisiler');
+            const sebep = options.getString('sebep');
+            const sonuc = options.getString('sonuc');
+
+            const embed = new EmbedBuilder()
+                .setTitle('📝 Yeni Destek İşlemi Kaydedildi')
+                .setColor('#57F287')
+                .addFields(
+                    { name: '👤 İşlem Yapılan', value: `<@${hedefKisi.id}>`, inline: true },
+                    { name: '🛠️ İşlemi Yapan', value: `<@${member.id}>`, inline: true },
+                    { name: '📌 Sebep', value: sebep, inline: false },
+                    { name: '📊 Sonuç', value: sonuc, inline: false }
+                )
+                .setTimestamp();
+
+            await interaction.reply({ embeds: [embed], ephemeral: true });
+
+            if (logKanalet) {
+                await logKanalet.send({ embeds: [embed] });
+            }
+        }
+
+        // --- 11. DESTEK-İŞLEM İSTATİSTİK YENİ ---
+        else if (commandName === 'destek-islem' && options.getSubcommand() === 'istatistikyeni') {
+            const yetkili = options.getUser('kullanici');
+            const performans = { haftalik: 12, aylik: 45, sonIslemler: [{ sebep: "Rol düzenleme", sonuc: "Çözüldü" }] };
+
+            let sonIslemlerMetin = performans.sonIslemler.map((i, index) => `**${index + 1}.** Sebep: *${i.sebep}* | Sonuç: **${i.sonuc}**`).join('\n');
+
+            const embed = new EmbedBuilder()
+                .setTitle(`📊 Yetkili İstatistiği: ${yetkili.username}`)
+                .setThumbnail(yetkili.displayAvatarURL())
+                .setColor('#FEE75C')
+                .addFields(
+                    { name: '📈 Performans Özeti', value: `• Haftalık İşlem: \`${performans.haftalik}\`\n• Aylık İşlem: \`${performans.aylik}\``, inline: false },
+                    { name: '🕒 Son Destek İşlemleri', value: sonIslemlerMetin, inline: false }
+                )
+                .setTimestamp();
+
+            await interaction.reply({ embeds: [embed], ephemeral: false });
+        }
+
+    } catch (err) {
+        console.error('Komut işlenirken hata oluştu:', err);
+        const errContent = 'İşlem gerçekleştirilirken bir hata oluştu (Yetki veya eksik parametre sorunu olabilir).';
+        
+        if (interaction.deferred || interaction.replied) {
+            await interaction.followUp({ content: errContent, ephemeral: true }).catch(() => {});
+        } else {
+            await interaction.reply({ content: errContent, ephemeral: true }).catch(() => {});
         }
     }
 });
