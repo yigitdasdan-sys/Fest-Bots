@@ -203,4 +203,4 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
-client.login('BOT_TOKENINIZI_BURAYA_YAZIN');
+client.login(process.env.TOKEN);
